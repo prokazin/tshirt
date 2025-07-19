@@ -1,0 +1,120 @@
+import os
+from flask import Flask, request
+import telebot
+from telebot import types
+from PIL import Image, ImageDraw, ImageFont
+import io
+
+app = Flask(__name__)
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+bot = telebot.TeleBot(TOKEN)
+
+# Данные пользователей (цвет, шрифт)
+user_data = {}
+
+# Клавиатура выбора цвета
+def color_keyboard():
+    markup = types.ReplyKeyboardMarkup(row_width=3)
+    btn1 = types.KeyboardButton("⚪ Белый")
+    btn2 = types.KeyboardButton("⚫ Черный")
+    btn3 = types.KeyboardButton("🔴 Красный")
+    markup.add(btn1, btn2, btn3)
+    return markup
+
+# Клавиатура выбора шрифта
+def font_keyboard():
+    markup = types.ReplyKeyboardMarkup(row_width=3)
+    btn1 = types.KeyboardButton("Arial")
+    btn2 = types.KeyboardButton("Comic Sans")
+    btn3 = types.KeyboardButton("Times New Roman")
+    markup.add(btn1, btn2, btn3)
+    return markup
+
+# Команда /start
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.send_message(
+        message.chat.id,
+        "👕 Привет! Я создам футболку с твоим текстом.\n"
+        "➡️ Сначала выбери цвет футболки:",
+        reply_markup=color_keyboard()
+    )
+
+# Выбор цвета
+@bot.message_handler(func=lambda m: m.text in ["⚪ Белый", "⚫ Черный", "🔴 Красный"])
+def choose_color(message):
+    color_map = {
+        "⚪ Белый": "white",
+        "⚫ Черный": "black",
+        "🔴 Красный": "red"
+    }
+    user_data[message.chat.id] = {"color": color_map[message.text]}
+    bot.send_message(
+        message.chat.id,
+        "Теперь выбери шрифт:",
+        reply_markup=font_keyboard()
+    )
+
+# Выбор шрифта
+@bot.message_handler(func=lambda m: m.text in ["Arial", "Comic Sans", "Times New Roman"])
+def choose_font(message):
+    if message.chat.id not in user_data:
+        return start(message)
+    
+    font_map = {
+        "Arial": "arial.ttf",
+        "Comic Sans": "comic.ttf",
+        "Times New Roman": "times.ttf"
+    }
+    user_data[message.chat.id]["font"] = font_map[message.text]
+    bot.send_message(
+        message.chat.id,
+        "Теперь отправь мне текст, который хочешь нанести на футболку:",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
+# Обработка текста
+@bot.message_handler(func=lambda m: True, content_types=['text'])
+def handle_text(message):
+    if message.chat.id not in user_data or "font" not in user_data[message.chat.id]:
+        return start(message)
+    
+    # Загружаем шаблон
+    color = user_data[message.chat.id]["color"]
+    shirt = Image.open(f"templates/{color}.png")
+    draw = ImageDraw.Draw(shirt)
+    
+    # Настройки шрифта
+    font_path = f"fonts/{user_data[message.chat.id]['font']}"
+    font = ImageFont.truetype(font_path, 40)
+    
+    # Размещаем текст
+    text = message.text
+    text_width = draw.textlength(text, font=font)
+    x = (shirt.width - text_width) // 2
+    y = shirt.height // 2
+    draw.text((x, y), text, font=font, fill="black")
+    
+    # Отправляем результат
+    img_byte_arr = io.BytesIO()
+    shirt.save(img_byte_arr, format='PNG')
+    img_byte_arr.seek(0)
+    bot.send_photo(message.chat.id, img_byte_arr)
+
+# Вебхук для Vercel
+@app.route('/', methods=['GET'])
+def home():
+    return "Бот работает!"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        update = telebot.types.Update.de_json(request.stream.read().decode('utf-8'))
+        bot.process_new_updates([update])
+        return 'OK', 200
+    return 'Error', 403
+
+if __name__ == '__main__':
+    bot.remove_webhook()
+    bot.set_webhook(url="https://ВАШ_ПРОЕКТ.vercel.app/webhook")
+    app.run()
